@@ -1,0 +1,186 @@
+version: '3.8'
+
+networks:
+  de_network:
+    driver: bridge
+
+services:
+  # ============================================================
+  # 1. MINIO - DATA LAKE (S3-compatible object storage)
+  # ============================================================
+  minio:
+    image: minio/minio:RELEASE.2023-09-30T07-02-29Z
+    container_name: de_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - de_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ============================================================
+  # 2. POSTGRESQL - Backend cho Hive Metastore & Airflow
+  # ============================================================
+  postgres:
+    image: postgres:15
+    container_name: de_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hivepassword
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init/create-dbs.sh:/docker-entrypoint-initdb.d/create-dbs.sh
+    networks:
+      - de_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ============================================================
+  # 3. HIVE METASTORE - Schema registry cho Data Lake
+  # ============================================================
+  hive-metastore:
+    build:
+      context: .
+      dockerfile: Dockerfile.hive
+    image: de_hive_custom:latest
+    container_name: de_hive_metastore
+    ports:
+      - "9083:9083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - de_network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 9083 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+
+  # ============================================================
+  # 4. TRINO - SQL Query Engine siêu tốc
+  # ============================================================
+  trino:
+    image: trinodb/trino:435
+    container_name: de_trino
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - de_network
+
+  # ============================================================
+  # 5. INIT BUCKETS - Tạo buckets trên MinIO
+  # ============================================================
+  init-buckets:
+    image: minio/mc
+    container_name: de_init_buckets
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO...' &&
+      until (/usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadminpassword) do sleep 2; done &&
+      echo 'Creating buckets...' &&
+      /usr/bin/mc mb myminio/bronze --ignore-existing &&
+      /usr/bin/mc mb myminio/silver --ignore-existing &&
+      /usr/bin/mc mb myminio/gold --ignore-existing &&
+      /usr/bin/mc mb myminio/warehouse --ignore-existing &&
+      echo 'All buckets created!'"
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - de_network
+
+  # ============================================================
+  # 6. AIRFLOW WEBSERVER - UI quản lý pipeline
+  # ============================================================
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: de_airflow_webserver
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://hive:hivepassword@postgres:5432/airflow_db
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadminpassword
+      HIVE_METASTORE_URI: thrift://hive-metastore:9083
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./spark_apps:/opt/airflow/spark_apps
+      - ./data:/opt/airflow/data
+      - airflow_logs:/opt/airflow/logs
+    command: >
+      bash -c "airflow db init 2>/dev/null;
+      airflow users create --username admin --firstname Tran --lastname DucGiap --role Admin --email admin@example.com --password adminpassword 2>/dev/null || true;
+      airflow webserver"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-buckets:
+        condition: service_completed_successfully
+    networks:
+      - de_network
+
+  # ============================================================
+  # 7. AIRFLOW SCHEDULER - Điều phối tác vụ
+  # ============================================================
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: de_airflow_scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://hive:hivepassword@postgres:5432/airflow_db
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadminpassword
+      HIVE_METASTORE_URI: thrift://hive-metastore:9083
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./spark_apps:/opt/airflow/spark_apps
+      - ./data:/opt/airflow/data
+      - airflow_logs:/opt/airflow/logs
+    command: bash -c "sleep 15 && airflow scheduler"
+    depends_on:
+      - airflow-webserver
+    networks:
+      - de_network
+
+volumes:
+  minio_data:
+  postgres_data:
+  airflow_logs:

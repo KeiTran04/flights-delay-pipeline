@@ -1,0 +1,22 @@
+FROM apache/airflow:2.7.2-python3.10
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openjdk-11-jdk \
+        curl \
+        procps \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+ENV PATH=$JAVA_HOME/bin:$PATH
+
+USER airflow
+
+RUN pip install --no-cache-dir --no-deps pyspark==3.5.0 py4j \
+    && pip install --no-cache-dir \
+        boto3 \
+        apache-airflow-providers-postgres \
+        trino
