@@ -60,12 +60,14 @@ try:
     df_fact_flights.write \
         .format("delta") \
         .mode("overwrite") \
+        .option("overwriteSchema", "true") \
         .save("s3a://gold/fact_flights_delay")
 
     print(" [SUCCESS] Dữ liệu tầng GOLD đã sẵn sàng phục vụ BI!")
 
 except Exception as e:
     print(f" [ERROR] Lỗi tầng Gold: {e}")
+    raise
 
 finally:
     spark.stop()
