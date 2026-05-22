@@ -59,12 +59,14 @@ try:
     df_final.write \
         .format("delta") \
         .mode("overwrite") \
+        .option("overwriteSchema", "true") \
         .save("s3a://silver/flights_delta")
 
     print(" [SUCCESS] Dữ liệu tầng SILVER đã sẵn sàng!")
 
 except Exception as e:
     print(f" [ERROR] {e}")
+    raise
 
 finally:
     spark.stop()
