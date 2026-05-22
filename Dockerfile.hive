@@ -10,9 +10,13 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -L -o /opt/hive/lib/postgresql-42.6.2.jar \
-    https://jdbc.postgresql.org/download/postgresql-42.6.2.jar
+    https://jdbc.postgresql.org/download/postgresql-42.6.2.jar && \
+    curl -L -o /opt/hive/lib/hadoop-aws-3.1.0.jar \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.1.0/hadoop-aws-3.1.0.jar && \
+    curl -L -o /opt/hive/lib/aws-java-sdk-bundle-1.11.271.jar \
+    https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.11.271/aws-java-sdk-bundle-1.11.271.jar
 
-RUN chown hive:hive /opt/hive/lib/postgresql-42.6.2.jar
+RUN chown hive:hive /opt/hive/lib/postgresql-42.6.2.jar /opt/hive/lib/hadoop-aws-3.1.0.jar /opt/hive/lib/aws-java-sdk-bundle-1.11.271.jar
 RUN chown -R hive:hive /opt/hive/conf /opt/hive/logs 2>/dev/null; chmod -R 755 /opt/hive/conf
 
 RUN cat > /entrypoint.sh << 'SCRIPT'
@@ -75,11 +79,19 @@ cat > ${HIVE_CONF_DIR}/hive-site.xml << 'XMLEOF'
     <name>fs.s3a.impl</name>
     <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
   </property>
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>s3a://warehouse/</value>
+  </property>
 </configuration>
 XMLEOF
 
 echo '>>> Initializing Hive Metastore schema...'
 /opt/hive/bin/schematool -dbType postgres -initSchema --verbose 2>&1 | tail -10
+
+echo '>>> Adding S3A jars to Hadoop classpath...'
+export HADOOP_CLASSPATH=/opt/hive/lib/hadoop-aws-3.1.0.jar:/opt/hive/lib/aws-java-sdk-bundle-1.11.271.jar:${HADOOP_CLASSPATH}
+export HADOOP_OPTS="$HADOOP_OPTS -Dfs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem -Dfs.s3a.endpoint=http://minio:9000 -Dfs.s3a.path.style.access=true -Dfs.s3a.access.key=minioadmin -Dfs.s3a.secret.key=minioadminpassword"
 
 echo '>>> Starting Hive Metastore service on port 9083...'
 exec /opt/hive/bin/hive --service metastore \
