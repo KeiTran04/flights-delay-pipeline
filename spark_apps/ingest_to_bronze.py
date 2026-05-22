@@ -34,7 +34,7 @@ datasets = [
 ]
 
 for csv_file, parquet_dir in datasets:
-    SRC_CSV_PATH = f"./data/{csv_file}"
+    SRC_CSV_PATH = f"/opt/airflow/data/{csv_file}"
     TG_PATH = f"s3a://bronze/{parquet_dir}"
 
     try:
@@ -44,7 +44,7 @@ for csv_file, parquet_dir in datasets:
         df = spark.read.csv(SRC_CSV_PATH, header=True, inferSchema=True)
 
         print(f">>> Ghi Delta table tại {TG_PATH} ...")
-        df.write.mode("overwrite").format("delta").save(TG_PATH)
+        df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").save(TG_PATH)
 
         print(f" [SUCCESS] File {csv_file} -> Bronze ({TG_PATH})")
 
