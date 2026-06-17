@@ -13,7 +13,7 @@ Tự động hóa thu thập, xử lý, và lưu trữ dữ liệu chậm chuy�
 ### Công nghệ sử dụng
 
 | Thành phần | Công nghệ | Vai trò |
-|-----------|-----------|---------|
+| --- | --- | --- |
 | **Object Storage** | MinIO (S3-compatible) | Data Lake — lưu Delta Lake files |
 | **Metadata** | PostgreSQL 15 | Backend cho Hive Metastore & Airflow |
 | **Schema Registry** | Hive Metastore 3.1.3 | Quản lý schema cho Delta tables |
@@ -55,17 +55,20 @@ Tự động hóa thu thập, xử lý, và lưu trữ dữ liệu chậm chuy�
 #### Vai trò từng tầng
 
 **Bronze Layer** — Raw data nguyên bản từ CSV (31 cột):
+
 - `flights`: 5,819,079 records — thông tin chuyến bay gốc (YEAR, MONTH, AIRLINE, DEPARTURE_DELAY, ARRIVAL_DELAY, CANCELLATION_REASON, ...)
 - `airlines`: 14 hãng — mã IATA + tên hãng
 - `airports`: 322 sân bay — mã IATA, tên, thành phố, tiểu bang, tọa độ
 
 **Silver Layer** — Dữ liệu đã làm sạch:
+
 - Chuyển đổi YEAR/MONTH/DAY → cột `FLIGHT_DATE` (DATE type)
 - Xử lý null: `DEPARTURE_DELAY = 0` nếu chuyến bị hủy (CANCELLED = 1)
 - Loại bỏ cột raw dư thừa (YEAR, MONTH, DAY)
 - 8 cột cốt lõi: FLIGHT_DATE, AIRLINE_CODE, FLIGHT_NUMBER, ORIGIN_AIRPORT, DESTINATION_AIRPORT, DEPARTURE_DELAY, ARRIVAL_DELAY, CANCELLED
 
 **Gold Layer** — Business-ready fact table:
+
 - `fact_flights_delay`: JOIN với airlines để enrich tên hãng (`AIRLINE_NAME`)
 - 9 cột sẵn sàng cho BI, phân tích, dashboard
 
@@ -107,7 +110,7 @@ flight_delays_pipeline/
 ### Yêu cầu
 
 | Yêu cầu | Phiên bản tối thiểu |
-|---------|-------------------|
+| --- | --- |
 | Docker Desktop | 24+ (WSL2 backend) |
 | RAM | 8 GB (khuyến nghị 16 GB cho 5.8M records) |
 | Git | 2.x |
@@ -135,7 +138,7 @@ docker-compose ps
 ### Truy cập các giao diện
 
 | Service | URL | Thông tin đăng nhập |
-|---------|-----|-------------------|
+| --- | --- | --- |
 | **Airflow Web UI** | http://localhost:8080 | `admin` / `adminpassword` |
 | **Trino CLI** | `docker exec -it de_trino trino` | — |
 | **MinIO Console** | http://localhost:9001 | `minioadmin` / `minioadminpassword` |
@@ -170,15 +173,16 @@ ingest_to_bronze >> transform_to_silver >> transform_to_gold >> register_trino_t
 ```
 
 | Task | Script | Mô tả | Thời gian chạy (ước lượng) |
-|------|--------|-------|--------------------------|
-| `ingest_to_bronze` | `ingest_to_bronze.py` | Đọc CSV → Delta Lake trên MinIO | ~30s |
-| `transform_to_silver` | `transform_to_silver.py` | Làm sạch, transform → Delta Silver | ~12s |
-| `transform_to_gold` | `transform_to_gold.py` | JOIN airlines → Delta Gold | ~18s |
-| `register_trino_tables` | `register_trino_tables.py` | Đăng ký schema & tables vào Hive Metastore qua Trino | ~1s |
+| --- | --- | --- | --- |
+| `ingest_to_bronze` | `ingest_to_bronze.py` | Đọc CSV → Delta Lake trên MinIO | \~30s |
+| `transform_to_silver` | `transform_to_silver.py` | Làm sạch, transform → Delta Silver | \~12s |
+| `transform_to_gold` | `transform_to_gold.py` | JOIN airlines → Delta Gold | \~18s |
+| `register_trino_tables` | `register_trino_tables.py` | Đăng ký schema & tables vào Hive Metastore qua Trino | \~1s |
 
 ### Xử lý lỗi
 
 **Kiểm tra log:**
+
 ```bash
 # Xem log task cụ thể
 docker exec de_airflow_webserver cat /opt/airflow/logs/dag_id=flight_delays_medallion_pipeline/run_id=<run_id>/task_id=<task_id>/attempt=1.log
@@ -188,16 +192,17 @@ docker exec de_airflow_webserver cat /opt/airflow/logs/dag_id=flight_delays_meda
 
 **Lỗi thường gặp:**
 
-1. **`PATH_NOT_FOUND`** — File CSV không tồn tại ở path đã mount. Kiểm tra volume mount trong `docker-compose.yml` (`./data:/opt/airflow/data`).
+1. `PATH_NOT_FOUND` — File CSV không tồn tại ở path đã mount. Kiểm tra volume mount trong `docker-compose.yml` (`./data:/opt/airflow/data`).
 
-2. **`DELTA_FAILED_TO_MERGE_FIELDS`** — Schema mismatch giữa Delta log cũ và DataFrame mới. Xóa Delta log cũ trên MinIO:
+2. `DELTA_FAILED_TO_MERGE_FIELDS` — Schema mismatch giữa Delta log cũ và DataFrame mới. Xóa Delta log cũ trên MinIO:
+
    ```bash
    docker exec de_minio mc rm --recursive --force myminio/<bucket>/<path>
    ```
 
-3. **`ClassNotFoundException: S3AFileSystem`** — Hive Metastore thiếu hadoop-aws jar. Kiểm tra `HADOOP_CLASSPATH` trong entrypoint của `Dockerfile.hive`.
+3. `ClassNotFoundException: S3AFileSystem` — Hive Metastore thiếu hadoop-aws jar. Kiểm tra `HADOOP_CLASSPATH` trong entrypoint của `Dockerfile.hive`.
 
-4. **`CREATE TABLE … is disallowed`** — Trino không cho CREATE TABLE khi Delta data đã tồn tại. Dùng `CALL delta.system.register_table()` — đã được xử lý trong `register_trino_tables.py`.
+4. `CREATE TABLE … is disallowed` — Trino không cho CREATE TABLE khi Delta data đã tồn tại. Dùng `CALL delta.system.register_table()` — đã được xử lý trong `register_trino_tables.py`.
 
 ---
 
@@ -233,6 +238,7 @@ SELECT 'gold_fact',       COUNT(*) FROM delta.gold.fact_flights_delay;
 ### Các câu truy vấn phân tích mẫu
 
 **Top 10 hãng bay trễ nhất:**
+
 ```sql
 SELECT a.airline,
        COUNT(*)                                        AS num_flights,
@@ -246,6 +252,7 @@ ORDER BY avg_arrival_delay DESC;
 ```
 
 **Top 10 sân bay xuất phát có tỷ lệ trễ cao nhất:**
+
 ```sql
 SELECT ap.airport,
        ap.city,
@@ -261,6 +268,7 @@ ORDER BY delay_pct DESC;
 ```
 
 **Xu hướng trễ chuyến theo tháng:**
+
 ```sql
 SELECT date_trunc('month', flight_date) AS month,
        COUNT(*)                                         AS num_flights,
@@ -271,6 +279,7 @@ ORDER BY 1;
 ```
 
 **Phân tích nguyên nhân trễ chuyến:**
+
 ```sql
 SELECT 'Airline Delay'       AS reason, ROUND(SUM(COALESCE(airline_delay,0)),2) AS minutes FROM delta.bronze.flights
 UNION ALL
@@ -286,7 +295,7 @@ SELECT 'Security Delay',            ROUND(SUM(COALESCE(security_delay,0)),2)    
 ### Kết nối BI tools
 
 | Tool | Connection String / JDBC URL |
-|------|---------------------------|
+| --- | --- |
 | **Tableau / Power BI** | Host: `localhost`, Port: `8081`, Catalog: `delta`, Database: `gold`, User: `admin` |
 | **JDBC Driver** | `trino://admin@localhost:8081/delta/gold` |
 | **Trino CLI** | `docker exec -it de_trino trino` |
@@ -296,7 +305,7 @@ SELECT 'Security Delay',            ROUND(SUM(COALESCE(security_delay,0)),2)    
 ## 6. Tham khảo Service Ports & Credentials
 
 | Service | Container name | Host port | Internal port |
-|---------|---------------|-----------|---------------|
+| --- | --- | --- | --- |
 | MinIO API | `de_minio` | 9000 | 9000 |
 | MinIO Console | `de_minio` | 9001 | 9001 |
 | PostgreSQL | `de_postgres` | 5432 | 5432 |
@@ -309,7 +318,7 @@ SELECT 'Security Delay',            ROUND(SUM(COALESCE(security_delay,0)),2)    
 **Credentials mặc định:**
 
 | Service | Username | Password |
-|---------|----------|----------|
+| --- | --- | --- |
 | MinIO | `minioadmin` | `minioadminpassword` |
 | PostgreSQL (hive) | `hive` | `hivepassword` |
 | PostgreSQL (airflow) | `hive` | `hivepassword` |

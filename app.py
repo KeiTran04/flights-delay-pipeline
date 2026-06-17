@@ -9,7 +9,6 @@ st.set_page_config(layout="wide", page_title="Flight Delays Dashboard")
 TRINO_HOST = os.environ.get("TRINO_HOST", "localhost")
 TRINO_PORT = os.environ.get("TRINO_PORT", 8081)
 TRINO_USER = os.environ.get("TRINO_USER", "admin")
-TRINO_PASS = os.environ.get("TRINO_PASS", "")
 
 
 def get_conn():
@@ -163,6 +162,22 @@ def load_top_airports_data():
     return run_query(sql)
 
 
+@st.cache_data(ttl=600)
+def load_airport_map_data():
+    sql = """
+    SELECT ap.iata_code, ap.airport, ap.city, ap.state,
+           ap.latitude, ap.longitude,
+           COUNT(*)                                         AS num_departures,
+           ROUND(AVG(f.arrival_delay), 2)                   AS avg_arrival_delay,
+           ROUND(SUM(CASE WHEN f.arrival_delay > 15 THEN 1 ELSE 0 END)
+               * 100.0 / NULLIF(COUNT(*), 0), 2)            AS delay_pct
+    FROM delta.gold.fact_flights_delay f
+    JOIN delta.bronze.airports ap ON f.origin_airport = ap.iata_code
+    GROUP BY ap.iata_code, ap.airport, ap.city, ap.state, ap.latitude, ap.longitude
+    """
+    return run_query(sql)
+
+
 def main():
     st.title("Flight Delays Analysis Dashboard")
     st.markdown("""
@@ -224,8 +239,8 @@ def main():
     with col4:
         st.metric("Worst Airline", worst)
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Airlines", "Trends", "Delay Reasons", "Airports"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Airlines", "Trends", "Delay Reasons", "Airports", "Map"
     ])
 
     with tab1:
@@ -315,6 +330,43 @@ def main():
         )
         fig.update_traces(textposition="outside")
         fig.update_layout(height=450)
+        st.plotly_chart(fig, width='stretch')
+
+    with tab5:
+        st.subheader("Airport Delay Map — Avg Arrival Delay by Origin")
+        df_map = load_airport_map_data()
+        fig = px.scatter_geo(
+            df_map,
+            lat="latitude",
+            lon="longitude",
+            size="num_departures",
+            color="avg_arrival_delay",
+            hover_name="airport",
+            hover_data={
+                "city": True,
+                "state": True,
+                "avg_arrival_delay": ":.2f",
+                "delay_pct": ":.2f",
+                "num_departures": ":,",
+                "latitude": False,
+                "longitude": False,
+            },
+            color_continuous_scale="RdYlGn_r",
+            color_continuous_midpoint=0,
+            projection="albers usa",
+            title="Average Arrival Delay by Origin Airport",
+            labels={"avg_arrival_delay": "Avg Delay (min)"},
+            size_max=50,
+        )
+        fig.update_layout(
+            height=650,
+            geo=dict(
+                scope="usa",
+                showland=True,
+                landcolor="lightgray",
+                coastlinecolor="gray",
+            ),
+        )
         st.plotly_chart(fig, width='stretch')
 
 

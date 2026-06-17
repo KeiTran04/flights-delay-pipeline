@@ -32,6 +32,11 @@ try:
     df_flights = spark.read.format("delta").load("s3a://silver/flights_delta")
     df_airlines = spark.read.format("delta").load("s3a://bronze/airlines_parquet")
 
+    rows_flights = df_flights.count()
+    rows_airlines = df_airlines.count()
+    print(f">>> Silver flights: {rows_flights:,} rows")
+    print(f">>> Bronze airlines: {rows_airlines:,} rows")
+
     df_flights_ready = df_flights.withColumnRenamed("AIRLINE", "AIRLINE_CODE")
 
     df_gold = df_flights_ready.join(
@@ -39,6 +44,13 @@ try:
         df_flights_ready["AIRLINE_CODE"] == df_airlines["IATA_CODE"],
         "left"
     )
+
+    rows_unmatched = df_gold.filter(col("AIRLINE").isNull()).count()
+    if rows_unmatched > 0:
+        print(f" [WARN] Flights with unmatched airline codes: {rows_unmatched:,}")
+        df_gold.filter(col("AIRLINE").isNull()).select("AIRLINE_CODE").distinct().show()
+    else:
+        print(">>> All airline codes matched — foreign key integrity OK")
 
     df_fact_flights = df_gold.select(
         df_flights_ready["FLIGHT_DATE"],
@@ -52,6 +64,9 @@ try:
         df_flights_ready["CANCELLED"]
     )
 
+    rows_gold = df_fact_flights.count()
+    print(f">>> Gold rows: {rows_gold:,}")
+
     print("--- Schema tầng Gold ---")
     df_fact_flights.printSchema()
     df_fact_flights.show(5)
@@ -60,10 +75,9 @@ try:
     df_fact_flights.write \
         .format("delta") \
         .mode("overwrite") \
-        .option("overwriteSchema", "true") \
         .save("s3a://gold/fact_flights_delay")
 
-    print(" [SUCCESS] Dữ liệu tầng GOLD đã sẵn sàng phục vụ BI!")
+    print(f" [SUCCESS] Dữ liệu GOLD: {rows_gold:,} rows")
 
 except Exception as e:
     print(f" [ERROR] Lỗi tầng Gold: {e}")

@@ -1,4 +1,5 @@
 from pyspark.sql import SparkSession
+from schemas import FLIGHTS_SCHEMA, AIRLINES_SCHEMA, AIRPORTS_SCHEMA
 import os
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://localhost:9000")
@@ -28,25 +29,46 @@ spark = SparkSession.builder \
 spark.sparkContext.setLogLevel("WARN")
 
 datasets = [
-    ("airlines.csv", "airlines_parquet"),
-    ("airports.csv", "airports_parquet"),
-    ("flights.csv", "flights_parquet")
+    ("airlines.csv", "airlines_parquet", AIRLINES_SCHEMA),
+    ("airports.csv", "airports_parquet", AIRPORTS_SCHEMA),
+    ("flights.csv", "flights_parquet", FLIGHTS_SCHEMA),
 ]
 
-for csv_file, parquet_dir in datasets:
+for csv_file, parquet_dir, schema in datasets:
     SRC_CSV_PATH = f"/opt/airflow/data/{csv_file}"
     TG_PATH = f"s3a://bronze/{parquet_dir}"
+    BAD_RECORDS_PATH = f"s3a://bronze/_bad_records/{csv_file.replace('.csv', '')}"
 
     try:
         print(f"\n>>> BẮT ĐẦU XỬ LÝ FILE: {csv_file}")
-        print(f">>> Đọc dữ liệu từ: {SRC_CSV_PATH} ...")
 
-        df = spark.read.csv(SRC_CSV_PATH, header=True, inferSchema=True)
+        df = spark.read \
+            .option("header", "true") \
+            .option("mode", "PERMISSIVE") \
+            .option("badRecordsPath", BAD_RECORDS_PATH) \
+            .schema(schema) \
+            .csv(SRC_CSV_PATH)
+
+        rows_read = df.count()
+        print(f">>> Rows read: {rows_read:,}")
+
+        null_report = {}
+        for col_name in df.schema.names:
+            null_count = df.filter(df[col_name].isNull()).count()
+            if null_count > 0:
+                null_report[col_name] = null_count
+
+        if null_report:
+            print(">>> NULL values found:")
+            for c, n in sorted(null_report.items()):
+                print(f"    - {c}: {n:,} / {rows_read:,} ({(n/rows_read)*100:.2f}%)")
+        else:
+            print(">>> No NULL values — 100% clean")
 
         print(f">>> Ghi Delta table tại {TG_PATH} ...")
-        df.write.mode("overwrite").option("overwriteSchema", "true").format("delta").save(TG_PATH)
+        df.write.mode("overwrite").format("delta").save(TG_PATH)
 
-        print(f" [SUCCESS] File {csv_file} -> Bronze ({TG_PATH})")
+        print(f" [SUCCESS] File {csv_file} -> Bronze ({rows_read:,} rows)")
 
     except Exception as e:
         print(f"[ERROR] {csv_file}: {e}")

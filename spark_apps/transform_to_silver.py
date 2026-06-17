@@ -1,10 +1,14 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, concat_ws, lpad, to_date, when
+from schemas import FLIGHTS_SCHEMA
 import os
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadminpassword")
+
+DELAY_MIN = -300
+DELAY_MAX = 720
 
 spark = SparkSession.builder \
     .appName("Flight-Delays-Transformation-Silver") \
@@ -29,9 +33,24 @@ spark.sparkContext.setLogLevel("WARN")
 
 try:
     print(">>> Đọc dữ liệu flights từ tầng Bronze...")
-    df_bronze_flights = spark.read.format("delta").load("s3a://bronze/flights_parquet")
+    df_bronze = spark.read.format("delta").load("s3a://bronze/flights_parquet")
+    rows_bronze = df_bronze.count()
+    print(f">>> Bronze rows: {rows_bronze:,}")
 
-    df_transformed = df_bronze_flights.withColumn(
+    print(">>> Schema validation — checking for schema drift...")
+    bronze_columns = set(df_bronze.schema.names)
+    expected_columns = set(FLIGHTS_SCHEMA.names)
+    if bronze_columns != expected_columns:
+        missing = expected_columns - bronze_columns
+        extra = bronze_columns - expected_columns
+        if missing:
+            print(f" [WARN] Missing columns: {missing}")
+        if extra:
+            print(f" [WARN] Unexpected columns: {extra}")
+        if missing:
+            raise ValueError(f"Schema drift detected — missing columns: {missing}")
+
+    df_full = df_bronze.withColumn(
         "FLIGHT_DATE",
         to_date(
             concat_ws("-",
@@ -42,7 +61,11 @@ try:
         )
     )
 
-    df_cleaned = df_transformed.withColumn(
+    rows_with_flight_date = df_full.count()
+    rows_null_date = df_full.filter(col("FLIGHT_DATE").isNull()).count()
+    print(f">>> Invalid FLIGHT_DATE: {rows_null_date:,} / {rows_with_flight_date:,}")
+
+    df_cleaned = df_full.withColumn(
         "DEPARTURE_DELAY",
         when(col("CANCELLED") == 1, 0).otherwise(col("DEPARTURE_DELAY"))
     ).withColumn(
@@ -50,7 +73,16 @@ try:
         when(col("CANCELLED") == 1, 0).otherwise(col("ARRIVAL_DELAY"))
     )
 
+    rows_out_of_range = df_cleaned.filter(
+        (col("DEPARTURE_DELAY").isNotNull() & ((col("DEPARTURE_DELAY") < DELAY_MIN) | (col("DEPARTURE_DELAY") > DELAY_MAX)))
+        | (col("ARRIVAL_DELAY").isNotNull() & ((col("ARRIVAL_DELAY") < DELAY_MIN) | (col("ARRIVAL_DELAY") > DELAY_MAX)))
+    ).count()
+    if rows_out_of_range > 0:
+        print(f" [WARN] Rows with delay outside [{DELAY_MIN}, {DELAY_MAX}] min: {rows_out_of_range:,}")
+
     df_final = df_cleaned.drop("YEAR", "MONTH", "DAY")
+    rows_silver = df_final.count()
+    print(f">>> Silver rows: {rows_silver:,}")
 
     print("--- Schema tầng Silver ---")
     df_final.printSchema()
@@ -59,10 +91,9 @@ try:
     df_final.write \
         .format("delta") \
         .mode("overwrite") \
-        .option("overwriteSchema", "true") \
         .save("s3a://silver/flights_delta")
 
-    print(" [SUCCESS] Dữ liệu tầng SILVER đã sẵn sàng!")
+    print(f" [SUCCESS] Dữ liệu SILVER: {rows_silver:,} rows")
 
 except Exception as e:
     print(f" [ERROR] {e}")
